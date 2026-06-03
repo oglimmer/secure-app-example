@@ -1,0 +1,23 @@
+# backend
+backend/target/
+
+# frontend
+frontend/node_modules/
+frontend/dist/
+
+# secrets / local env (Vite auto-loads .env.local)
+.env
+.env.*
+!.env.example
+
+# e2e scratch file (see README Docker run command)
+e2e/_tmp.mjs
+
+# IDE
+.idea/
+*.iml
+.vscode/
+
+# misc
+.DS_Store
+*.log

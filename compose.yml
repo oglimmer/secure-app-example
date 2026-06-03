@@ -1,0 +1,28 @@
+# Secure Vault — full stack.
+#
+#   docker compose up --build
+#
+# Then open http://localhost:5173
+#
+# The frontend (nginx) serves the SPA and proxies /api to the backend, so the
+# whole app is single-origin — no CORS needed in this mode.
+
+services:
+  backend:
+    build: ./backend
+    # Exposed on the host only for convenience (direct API / H2 console at
+    # http://localhost:8080). The frontend reaches it internally as "backend".
+    ports:
+      - "8080:8080"
+    environment:
+      # In-memory H2 prototype — nothing to persist.
+      SPRING_PROFILES_ACTIVE: default
+    restart: unless-stopped
+
+  frontend:
+    build: ./frontend
+    ports:
+      - "5173:80"
+    depends_on:
+      - backend
+    restart: unless-stopped
