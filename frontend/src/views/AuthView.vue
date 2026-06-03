@@ -54,6 +54,9 @@ async function submit() {
       <p class="muted" style="margin-top: 0.75rem;">
         Your password never leaves this device. It derives the keys that encrypt
         your files and tags — there is no recovery if you forget it.
+        <span v-if="mode === 'register'">
+          Use at least 12 characters; a long passphrase is strongest.
+        </span>
       </p>
 
       <button type="submit" :disabled="busy" style="margin-top: 0.5rem; width: 100%;">

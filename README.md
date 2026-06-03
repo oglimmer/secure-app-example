@@ -23,13 +23,16 @@ All cryptography happens in the browser (`frontend/src/crypto.js`). This is a
 **zero-knowledge** design — the server is a dumb encrypted blob store.
 
 1. **Key derivation.** The password + a per-user random salt go through
-   PBKDF2-HMAC-SHA256 (310k iterations) to produce a master key. HKDF then
-   expands it into three independent sub-keys:
+   PBKDF2-HMAC-SHA256 (600k iterations, the current OWASP floor) to produce a
+   master key. A weak passphrase is rejected client-side first, since the
+   encrypted key material is offline-attackable if the database leaks. HKDF then
+   expands the master key into three independent sub-keys:
    - `encKey` — AES-GCM-256 that wraps each file's data key (and the user's
      OpenPGP private key)
    - `indexKey` — HMAC-SHA256 for blind indexes
    - `verifier` — sent to the server at login to prove password knowledge
-     (separate from the encryption keys, so it leaks nothing)
+     (separate from the encryption keys). The server stores only its SHA-256
+     hash, so a database leak yields nothing replayable against `/login`.
 
    `encKey`/`indexKey` are **non-extractable** `CryptoKey`s — they cannot be
    read out of memory or serialized, and they never leave the browser.

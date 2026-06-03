@@ -17,6 +17,8 @@ import org.springframework.web.server.ResponseStatusException;
 
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.util.Base64;
 
 @RestController
 @RequestMapping("/api/auth")
@@ -66,7 +68,7 @@ public class AuthController {
         if (users.existsByUsername(req.username())) {
             throw new ResponseStatusException(HttpStatus.CONFLICT, "username already taken");
         }
-        users.save(new VaultUser(req.username(), req.salt(), req.iterations(), req.verifier(),
+        users.save(new VaultUser(req.username(), req.salt(), req.iterations(), hashVerifier(req.verifier()),
                 req.publicKey(), req.wrappedPrivateKey(), req.wrappedPrivateKeyIv()));
         return ResponseEntity.status(HttpStatus.CREATED).build();
     }
@@ -89,13 +91,30 @@ public class AuthController {
         VaultUser user = users.findByUsername(req.username())
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.UNAUTHORIZED, "invalid credentials"));
 
+        // Compare hashes, not the verifier itself: the DB only ever holds the
+        // hash. Constant-time to avoid leaking the prefix match via timing.
         boolean ok = MessageDigest.isEqual(
-                user.getVerifier().getBytes(StandardCharsets.UTF_8),
-                req.verifier().getBytes(StandardCharsets.UTF_8));
+                user.getVerifierHash().getBytes(StandardCharsets.UTF_8),
+                hashVerifier(req.verifier()).getBytes(StandardCharsets.UTF_8));
         if (!ok) {
             throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "invalid credentials");
         }
         return new LoginResponse(sessions.issueToken(user.getId()), user.getId(),
                 user.getPublicKey(), user.getWrappedPrivateKey(), user.getWrappedPrivateKeyIv());
+    }
+
+    /**
+     * base64(SHA-256(verifier)). The verifier is a 256-bit password-derived key,
+     * so a single SHA-256 makes the stored value irreversible and non-replayable
+     * without the cost of a slow password hash (the entropy is already there).
+     */
+    private static String hashVerifier(String verifier) {
+        try {
+            byte[] digest = MessageDigest.getInstance("SHA-256")
+                    .digest(verifier.getBytes(StandardCharsets.UTF_8));
+            return Base64.getEncoder().encodeToString(digest);
+        } catch (NoSuchAlgorithmException e) {
+            throw new IllegalStateException("SHA-256 unavailable", e); // never on a standard JRE
+        }
     }
 }

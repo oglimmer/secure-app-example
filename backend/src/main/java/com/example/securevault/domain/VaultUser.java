@@ -12,7 +12,7 @@ import java.time.Instant;
 
 /**
  * A vault owner. The server stores only public key-derivation parameters
- * (salt + iteration count) and a login {@code verifier}. It never sees the
+ * (salt + iteration count) and a {@code verifierHash}. It never sees the
  * password, the derived keys, or any plaintext — all crypto happens in the
  * browser (zero-knowledge model).
  */
@@ -36,12 +36,16 @@ public class VaultUser {
     private int kdfIterations;
 
     /**
-     * Login verifier, base64. A value the client derives from the password
-     * (a key separate from the encryption/index keys). Proves password
-     * knowledge without revealing the password or the encryption keys.
+     * SHA-256 hash of the login verifier, base64. The client derives a 256-bit
+     * verifier from the password (a key separate from the encryption/index
+     * keys) and proves password knowledge by presenting it. We store only its
+     * hash — never the verifier itself — so a database leak yields no value the
+     * attacker can replay against {@code /login}. Because the verifier already
+     * carries 256 bits of entropy, a fast cryptographic hash is preimage-proof
+     * here; no slow password hashing is needed.
      */
     @Column(nullable = false)
-    private String verifier;
+    private String verifierHash;
 
     /**
      * The user's OpenPGP public key (ASCII-armored). Public by definition — it
@@ -72,12 +76,12 @@ public class VaultUser {
     protected VaultUser() {
     }
 
-    public VaultUser(String username, String kdfSalt, int kdfIterations, String verifier,
+    public VaultUser(String username, String kdfSalt, int kdfIterations, String verifierHash,
                      String publicKey, String wrappedPrivateKey, String wrappedPrivateKeyIv) {
         this.username = username;
         this.kdfSalt = kdfSalt;
         this.kdfIterations = kdfIterations;
-        this.verifier = verifier;
+        this.verifierHash = verifierHash;
         this.publicKey = publicKey;
         this.wrappedPrivateKey = wrappedPrivateKey;
         this.wrappedPrivateKeyIv = wrappedPrivateKeyIv;
@@ -99,8 +103,8 @@ public class VaultUser {
         return kdfIterations;
     }
 
-    public String getVerifier() {
-        return verifier;
+    public String getVerifierHash() {
+        return verifierHash;
     }
 
     public String getPublicKey() {

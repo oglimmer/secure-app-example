@@ -5,7 +5,7 @@
 
 import * as openpgp from 'openpgp'
 
-const PBKDF2_ITERATIONS = 310_000 // OWASP-recommended floor for PBKDF2-HMAC-SHA256
+const PBKDF2_ITERATIONS = 600_000 // OWASP-recommended floor for PBKDF2-HMAC-SHA256
 const subtle = globalThis.crypto.subtle
 
 // ---------- base64 <-> bytes ----------
@@ -34,6 +34,33 @@ export function randomSalt() {
 }
 
 export const defaultIterations = PBKDF2_ITERATIONS
+
+export const MIN_PASSPHRASE_LENGTH = 12
+
+/**
+ * Throw a descriptive Error if `password` is too weak to be a vault passphrase.
+ *
+ * This is the last line of defense for offline cracking: because the wrapped
+ * private key and DEKs are stored server-side and encrypted only under the
+ * password-derived key, a database leak lets an attacker brute-force the
+ * password offline regardless of how login works. A slow KDF (above) raises the
+ * per-guess cost; a high-entropy passphrase raises the number of guesses needed.
+ * This is a coarse floor, not a real strength meter — it just rejects the
+ * obviously-crackable.
+ */
+export function assertStrongPassphrase(password) {
+  if (password.length < MIN_PASSPHRASE_LENGTH) {
+    throw new Error(`Passphrase must be at least ${MIN_PASSPHRASE_LENGTH} characters.`)
+  }
+  const classes = [/[a-z]/, /[A-Z]/, /[0-9]/, /[^a-zA-Z0-9]/].filter((re) => re.test(password)).length
+  // A long passphrase (e.g. 4+ words) carries enough entropy on its own; shorter
+  // passwords must draw on more character classes to reach comparable strength.
+  if (password.length < 20 && classes < 3) {
+    throw new Error(
+      'Passphrase is too predictable — use 3+ character types (lower, upper, digits, symbols) or a longer passphrase of 20+ characters.'
+    )
+  }
+}
 
 /**
  * Derive the three keys we need from a password:

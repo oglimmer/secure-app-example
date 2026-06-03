@@ -3,6 +3,7 @@ import { ref, computed } from 'vue'
 import { api, setToken, clearToken } from '../api.js'
 import {
   deriveKeys,
+  assertStrongPassphrase,
   randomSalt,
   defaultIterations,
   bytesToBase64,
@@ -52,6 +53,9 @@ export const useVaultStore = defineStore('vault', () => {
   }
 
   async function register(name, password) {
+    // A weak passphrase undermines the whole zero-knowledge model — reject it
+    // before deriving any keys.
+    assertStrongPassphrase(password)
     const salt = randomSalt()
     const iterations = defaultIterations
     const { encKey: ek, verifier } = await deriveKeys(password, salt, iterations)

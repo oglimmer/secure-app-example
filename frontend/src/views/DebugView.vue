@@ -38,10 +38,11 @@ onMounted(load)
     <p class="muted" style="margin-top: 0.75rem;">{{ note }}</p>
     <p class="muted">
       This is exactly what the server — or anyone who steals the database — can
-      see. Scan the columns: <code>verifier</code>, <code>kdf_salt</code>,
+      see. Scan the columns: <code>verifier_hash</code>, <code>kdf_salt</code>,
       <code>meta_cipher</code>, <code>tag_cipher</code> are opaque; the searchable
-      <code>blind_index</code> is an HMAC, not the tag. No filename, no tag text,
-      no file content is recoverable here.
+      <code>blind_index</code> is an HMAC, not the tag. The login verifier is
+      stored only as a SHA-256 hash, so even this value can't be replayed to log
+      in. No filename, no tag text, no file content is recoverable here.
     </p>
     <p class="muted">
       Only deliberately-public values appear in the clear: <code>username</code>
