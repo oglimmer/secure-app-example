@@ -34,7 +34,12 @@ public class AuthController {
             @NotBlank String username,
             @NotBlank String salt,
             @Min(1) int iterations,
-            @NotBlank String verifier) {
+            @NotBlank String verifier,
+            // The client's OpenPGP identity, generated at registration. publicKey
+            // is cleartext; privateKey arrives already AES-GCM-encrypted under encKey.
+            @NotBlank String publicKey,
+            @NotBlank String wrappedPrivateKey,
+            @NotBlank String wrappedPrivateKeyIv) {
     }
 
     public record AuthParamsResponse(String salt, int iterations) {
@@ -43,16 +48,26 @@ public class AuthController {
     public record LoginRequest(@NotBlank String username, @NotBlank String verifier) {
     }
 
-    public record LoginResponse(String token, Long userId) {
+    /**
+     * On login the client also needs its OpenPGP identity back: the public key
+     * and the encKey-wrapped private key (which only the client can decrypt) so
+     * it can read files shared to it and sign new shares.
+     */
+    public record LoginResponse(String token, Long userId, String publicKey,
+                                String wrappedPrivateKey, String wrappedPrivateKeyIv) {
     }
 
-    /** Create a vault. The body carries only public KDF params + the login verifier. */
+    /**
+     * Create a vault. The body carries only public KDF params, the login
+     * verifier, and the OpenPGP identity (public key + encKey-wrapped private key).
+     */
     @PostMapping("/register")
     public ResponseEntity<Void> register(@Valid @RequestBody RegisterRequest req) {
         if (users.existsByUsername(req.username())) {
             throw new ResponseStatusException(HttpStatus.CONFLICT, "username already taken");
         }
-        users.save(new VaultUser(req.username(), req.salt(), req.iterations(), req.verifier()));
+        users.save(new VaultUser(req.username(), req.salt(), req.iterations(), req.verifier(),
+                req.publicKey(), req.wrappedPrivateKey(), req.wrappedPrivateKeyIv()));
         return ResponseEntity.status(HttpStatus.CREATED).build();
     }
 
@@ -80,6 +95,7 @@ public class AuthController {
         if (!ok) {
             throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "invalid credentials");
         }
-        return new LoginResponse(sessions.issueToken(user.getId()), user.getId());
+        return new LoginResponse(sessions.issueToken(user.getId()), user.getId(),
+                user.getPublicKey(), user.getWrappedPrivateKey(), user.getWrappedPrivateKeyIv());
     }
 }

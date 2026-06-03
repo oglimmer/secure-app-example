@@ -10,6 +10,10 @@ The hard part is **searching encrypted tags without downloading them all** to
 the client. This is solved with **blind indexes** — and, for substring
 ("contains") search, **trigram blind indexes**.
 
+Files can also be **shared with other users** without re-encrypting them or
+revealing your password, using per-file data keys wrapped to each recipient's
+OpenPGP public key (see "Sharing" below). The server stays a dumb blob store.
+
 - **Frontend:** Vue 3 (Composition API) + Vite + Pinia + Vue Router
 - **Backend:** Spring Boot 4.0.6 (Java 25) + Spring Data JPA + in-memory H2
 
@@ -21,7 +25,8 @@ All cryptography happens in the browser (`frontend/src/crypto.js`). This is a
 1. **Key derivation.** The password + a per-user random salt go through
    PBKDF2-HMAC-SHA256 (310k iterations) to produce a master key. HKDF then
    expands it into three independent sub-keys:
-   - `encKey` — AES-GCM-256 for encrypting file bytes, metadata, and tag text
+   - `encKey` — AES-GCM-256 that wraps each file's data key (and the user's
+     OpenPGP private key)
    - `indexKey` — HMAC-SHA256 for blind indexes
    - `verifier` — sent to the server at login to prove password knowledge
      (separate from the encryption keys, so it leaks nothing)
@@ -29,9 +34,13 @@ All cryptography happens in the browser (`frontend/src/crypto.js`). This is a
    `encKey`/`indexKey` are **non-extractable** `CryptoKey`s — they cannot be
    read out of memory or serialized, and they never leave the browser.
 
-2. **Encryption.** Each file, its metadata (name/type/size), and each tag's
-   text are encrypted with AES-GCM under a fresh random IV. The server stores
-   only the ciphertext + IV.
+2. **Envelope encryption.** Each upload gets a fresh random **per-file data key
+   (DEK)**. The file bytes, metadata (name/type/size), and each tag's text are
+   encrypted with AES-GCM under that DEK. The DEK itself is then *wrapped* in a
+   `file_access` envelope row — for the owner, symmetrically under `encKey`. The
+   server stores only ciphertext + IVs and wrapped DEKs; it never sees a data
+   key. The indirection (DEK, not `encKey`, encrypts the bytes) is what lets a
+   file be shared by re-wrapping its small DEK rather than re-encrypting it.
 
 3. **Searchable tags (trigram blind index).** To support substring
    ("contains") search, we split each normalized tag into its length-3
@@ -54,6 +63,38 @@ All cryptography happens in the browser (`frontend/src/crypto.js`). This is a
    `(owner_id, blind_index)` — indexed, not a full scan, even with millions of
    trigram rows.
 
+4. **Sharing (OpenPGP key envelopes).** Every user generates an OpenPGP keypair
+   (Curve25519) at registration. The public key is stored in cleartext (it's
+   public); the private key is itself AES-GCM-encrypted under `encKey` and stored
+   as just another ciphertext blob, recovered and decrypted client-side at login.
+
+   To share a file, the owner fetches the recipient's public key, unwraps the
+   file's DEK from their own envelope, re-encrypts that ~32-byte DEK to the
+   recipient's public key (an armored OpenPGP message), and stores it as a new
+   `file_access` row (`role = READER`, `wrap_type = OPENPGP`). The recipient
+   decrypts the DEK with their private key, then decrypts the file/metadata/tags
+   under it. **The file bytes are never re-encrypted or copied** — one tiny
+   envelope per recipient is all that's added. OpenPGP is used *only* to wrap the
+   DEK; all bulk crypto stays WebCrypto AES-GCM.
+
+   **Public-key authenticity** is the hard part: the untrusted server could serve
+   an attacker's key in place of the recipient's, so a new share would be
+   encrypted to the attacker. The UI surfaces each key's **fingerprint** for
+   out-of-band verification (TOFU); "the server can misdirect a *new* share" is an
+   accepted residual risk in this prototype (same posture as `/auth/params`
+   username enumeration).
+
+   **Shared files are not searchable** by the recipient: blind indexes are keyed
+   with the *owner's* `indexKey`, which the recipient never has and the owner
+   can't reproduce under the recipient's key. Shared files are listed, decrypted,
+   and downloaded — just not tag-searchable. (A searchable variant would carry a
+   per-file index key inside the envelope; deliberately out of scope here.)
+
+   **Revocation** removes server-side access (`DELETE …/shares/{user}`) but
+   cannot retract a DEK a recipient has already unwrapped. Cryptographic
+   un-sharing would require rotating the file's DEK and re-wrapping for the
+   remaining recipients.
+
 ### What this protects — and what it leaks
 
 A server operator (or anyone who dumps the database) sees only ciphertext and
@@ -69,6 +110,12 @@ how long tags are). This is the inherent trade-off of trigram-based searchable
 encryption — it's what buys server-side substring search. (Search-pattern
 hiding needs ORAM/PIR, which is out of scope for a prototype.)
 
+Sharing adds its own metadata leakage: the server learns the **social graph**
+(which `file_access` rows link which users to which files, and who owns what) and
+holds every user's **public key** in the clear. It still cannot read any file,
+filename, tag, or data key. The wrapped private keys and wrapped DEKs are opaque
+ciphertext to it.
+
 ## Project layout
 
 ```
@@ -79,9 +126,15 @@ frontend/  Vue 3 SPA (all crypto in src/crypto.js, orchestrated in src/stores/va
 ### Key backend files
 - `domain/TagEntry.java` — the encrypted tag text (one row per tag), no blind index
 - `domain/TagGram.java` — the searchable trigram blind-index rows + indexes
+- `domain/FileAccess.java` — the key-envelope rows (owner = symmetric, share = OpenPGP)
 - `repo/TagGramRepository.java` — the indexed `findFileIdsContainingAll` query
-- `file/FileService.java` — upload / list / search / download / delete
-- `auth/AuthController.java` — register / params / login (verifier-based)
+- `file/FileService.java` — upload / list / search / download / delete / share / revoke
+- `user/UserController.java` — public-key lookup for sharing
+- `auth/AuthController.java` — register / params / login (carries the OpenPGP identity)
+
+All crypto helpers live in `frontend/src/crypto.js`; the DEK + OpenPGP envelope
+helpers are at the bottom. `frontend/src/stores/vault.js` orchestrates upload,
+list, search, download, and the share/revoke flow.
 
 ## Running it
 
@@ -132,10 +185,12 @@ from the repo root:
 ```bash
 node e2e/vault-e2e.mjs
 ```
-It exercises register → login (incl. wrong-password rejection) → encrypted
-upload → trigram substring ("contains") search (case-insensitive, multi-term
-AND, with false-positive verification) → download round-trip → per-user
-isolation, all against the live API using the real browser crypto module.
+It exercises register → login (incl. wrong-password rejection, plus recovering
+the OpenPGP identity) → encrypted upload → trigram substring ("contains") search
+(case-insensitive, multi-term AND, with false-positive verification) → download
+round-trip → per-user isolation → **sharing** (alice shares with bob via an
+OpenPGP key envelope; bob decrypts + downloads but cannot search or delete it)
+→ revocation, all against the live API using the real browser crypto module.
 
 ## Prototype limitations (not production-ready)
 
@@ -152,3 +207,12 @@ isolation, all against the live API using the real browser crypto module.
 - **Trigram indexing trades leakage for substring search** — see "What this
   protects — and what it leaks" above; the server can attempt co-occurrence
   analysis on per-file trigram sets.
+- **Share-key authenticity is TOFU at best** — the untrusted server serves the
+  public keys, so it can misdirect a *new* share to an attacker's key. The UI
+  shows fingerprints for out-of-band verification but there is no key-transparency
+  log or signed directory.
+- **Revocation isn't cryptographic** — revoking only deletes server-side access;
+  a recipient who already unwrapped the DEK keeps it. Real un-sharing needs DEK
+  rotation + re-wrap.
+- **Shared files aren't searchable** — by design (blind indexes are owner-keyed);
+  a per-file index key in the envelope would be needed to change this.

@@ -17,6 +17,14 @@ const uploading = ref(false)
 // search form
 const searchTags = ref('')
 
+// sharing state (scoped to one file at a time)
+const shareFor = ref(null) // file id whose share panel is open
+const shareName = ref('')
+const recipientKey = ref(null) // { username, fingerprint, publicKey }
+const shareBusy = ref(false)
+const shareError = ref('')
+const sharesList = ref([]) // who the open file is already shared with
+
 function parseTags(str) {
   return str.split(',').map((t) => t.trim()).filter(Boolean)
 }
@@ -29,6 +37,11 @@ function formatSize(bytes) {
 
 function formatDate(iso) {
   return new Date(iso).toLocaleString()
+}
+
+// Group a fingerprint into 4-char blocks for easier visual comparison.
+function prettyFp(fp) {
+  return (fp || '').toUpperCase().replace(/(.{4})/g, '$1 ').trim()
 }
 
 async function loadAll() {
@@ -78,7 +91,7 @@ async function doSearch() {
   busy.value = true
   try {
     files.value = await vault.searchByTags(tags)
-    listLabel.value = `Files with a tag containing ${tags.map((t) => `“${t}”`).join(' AND ')}`
+    listLabel.value = `Your files with a tag containing ${tags.map((t) => `“${t}”`).join(' AND ')}`
   } catch (e) {
     error.value = e.message || 'Search failed.'
   } finally {
@@ -110,6 +123,68 @@ async function remove(id) {
   }
 }
 
+// ---------- sharing ----------
+
+async function openShare(file) {
+  if (shareFor.value === file.id) {
+    shareFor.value = null
+    return
+  }
+  shareFor.value = file.id
+  shareName.value = ''
+  recipientKey.value = null
+  shareError.value = ''
+  sharesList.value = []
+  try {
+    sharesList.value = await vault.listShares(file.id)
+  } catch (e) {
+    shareError.value = e.message || 'Could not load existing shares.'
+  }
+}
+
+async function lookupRecipient() {
+  shareError.value = ''
+  recipientKey.value = null
+  const name = shareName.value.trim()
+  if (!name) {
+    shareError.value = 'Enter a username to share with.'
+    return
+  }
+  shareBusy.value = true
+  try {
+    recipientKey.value = await vault.getRecipientKey(name)
+  } catch (e) {
+    shareError.value = e.status === 404 ? `No user “${name}”.` : (e.message || 'Lookup failed.')
+  } finally {
+    shareBusy.value = false
+  }
+}
+
+async function confirmShare(file) {
+  shareError.value = ''
+  shareBusy.value = true
+  try {
+    await vault.shareFile(file, recipientKey.value)
+    recipientKey.value = null
+    shareName.value = ''
+    sharesList.value = await vault.listShares(file.id)
+  } catch (e) {
+    shareError.value = e.message || 'Share failed.'
+  } finally {
+    shareBusy.value = false
+  }
+}
+
+async function revoke(file, recipientUsername) {
+  shareError.value = ''
+  try {
+    await vault.revokeShare(file.id, recipientUsername)
+    sharesList.value = await vault.listShares(file.id)
+  } catch (e) {
+    shareError.value = e.message || 'Revoke failed.'
+  }
+}
+
 onMounted(loadAll)
 </script>
 
@@ -122,6 +197,11 @@ onMounted(loadAll)
     <button style="margin-top: 0.8rem;" :disabled="uploading" @click="doUpload">
       {{ uploading ? 'Encrypting & uploading…' : 'Encrypt & upload' }}
     </button>
+    <p class="muted" style="margin-top: 0.8rem;">
+      Your sharing key fingerprint:
+      <code>{{ prettyFp(vault.fingerprint) }}</code>. Give this to others so they
+      can confirm they’re really sharing with <em>you</em>.
+    </p>
   </div>
 
   <div class="panel">
@@ -133,9 +213,10 @@ onMounted(loadAll)
       <button class="ghost" @click="clearSearch">Show all</button>
     </div>
     <p class="muted" style="margin-top: 0.6rem;">
-      Substring match: each term (min 3 characters) must be <em>contained</em> in
-      one of a file’s tags, and files must match <em>all</em> terms. Only trigram
-      blind indexes are sent to the server.
+      Substring match over <em>your own</em> files: each term (min 3 characters)
+      must be <em>contained</em> in one of a file’s tags, and files must match
+      <em>all</em> terms. Only trigram blind indexes are sent to the server.
+      Files shared with you are listed but not searchable.
     </p>
   </div>
 
@@ -151,17 +232,71 @@ onMounted(loadAll)
     <div v-for="f in files" :key="f.id" class="file-item">
       <div class="row" style="justify-content: space-between;">
         <div>
-          <div class="file-name">{{ f.name }}</div>
+          <div class="file-name">
+            {{ f.name }}
+            <span v-if="!f.isOwner" class="tag" style="margin-left: 0.4rem;">
+              shared by {{ f.ownerUsername }}
+            </span>
+          </div>
           <div class="muted">{{ formatSize(f.size) }} · {{ formatDate(f.createdAt) }}</div>
         </div>
         <div class="row">
           <button class="ghost" @click="download(f.id)">Download</button>
-          <button class="danger" @click="remove(f.id)">Delete</button>
+          <button v-if="f.isOwner" class="ghost" @click="openShare(f)">Share</button>
+          <button v-if="f.isOwner" class="danger" @click="remove(f.id)">Delete</button>
         </div>
       </div>
       <div v-if="f.tags.length" style="margin-top: 0.5rem;">
         <span v-for="t in f.tags" :key="t" class="tag">{{ t }}</span>
       </div>
+
+      <!-- Share panel -->
+      <div v-if="shareFor === f.id" class="share-panel">
+        <div class="row">
+          <input type="text" v-model="shareName" placeholder="recipient username"
+                 style="flex: 1;" @keyup.enter="lookupRecipient" />
+          <button :disabled="shareBusy" @click="lookupRecipient">Look up</button>
+        </div>
+
+        <div v-if="recipientKey" style="margin-top: 0.6rem;">
+          <p class="muted" style="margin: 0 0 0.4rem;">
+            Encrypting to <strong>{{ recipientKey.username }}</strong> — verify their
+            fingerprint out-of-band before sharing:
+          </p>
+          <code>{{ prettyFp(recipientKey.fingerprint) }}</code>
+          <div class="row" style="margin-top: 0.6rem;">
+            <button :disabled="shareBusy" @click="confirmShare(f)">
+              {{ shareBusy ? 'Sharing…' : 'Confirm & share' }}
+            </button>
+            <button class="ghost" @click="recipientKey = null">Cancel</button>
+          </div>
+        </div>
+
+        <div v-if="sharesList.length" style="margin-top: 0.8rem;">
+          <p class="muted" style="margin: 0 0 0.3rem;">Shared with:</p>
+          <div v-for="s in sharesList" :key="s.recipientUsername" class="row"
+               style="justify-content: space-between; padding: 0.2rem 0;">
+            <span>{{ s.recipientUsername }}</span>
+            <button class="danger" @click="revoke(f, s.recipientUsername)">Revoke</button>
+          </div>
+        </div>
+
+        <p v-if="shareError" class="error">{{ shareError }}</p>
+      </div>
     </div>
   </div>
 </template>
+
+<style scoped>
+.share-panel {
+  margin-top: 0.8rem;
+  padding: 0.8rem;
+  border: 1px dashed #d0d0d8;
+  border-radius: 6px;
+}
+.share-panel code {
+  display: inline-block;
+  word-break: break-all;
+  font-size: 0.85rem;
+}
+</style>

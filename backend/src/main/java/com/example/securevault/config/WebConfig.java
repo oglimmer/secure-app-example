@@ -31,6 +31,6 @@ public class WebConfig implements WebMvcConfigurer {
     public void addInterceptors(InterceptorRegistry registry) {
         // Only the vault endpoints require a session; /api/auth/** stays open.
         registry.addInterceptor(authInterceptor)
-                .addPathPatterns("/api/files/**", "/api/search/**");
+                .addPathPatterns("/api/files/**", "/api/search/**", "/api/users/**");
     }
 }

@@ -1,7 +1,9 @@
 // Zero-knowledge crypto core. Everything in this file runs in the browser.
 // The password and the keys derived from it NEVER leave the device — the
 // server only ever receives ciphertext, public KDF parameters, blind indexes,
-// and a login verifier.
+// a login verifier, and OpenPGP public keys.
+
+import * as openpgp from 'openpgp'
 
 const PBKDF2_ITERATIONS = 310_000 // OWASP-recommended floor for PBKDF2-HMAC-SHA256
 const subtle = globalThis.crypto.subtle
@@ -155,4 +157,89 @@ export async function ngramBlindIndexes(indexKey, text) {
   // Trigrams come from the already-normalized string, so we sign them as-is
   // (re-normalizing would trim significant leading/trailing spaces inside a gram).
   return Promise.all(tagNgrams(text).map((g) => hmac(indexKey, g)))
+}
+
+// ---------- per-file data keys (DEK) + envelopes ----------
+//
+// Sharing is built on envelope encryption. Each file is encrypted once under a
+// random per-file data key (DEK); the bulk crypto stays AES-GCM/WebCrypto. The
+// DEK is then *wrapped* once per recipient:
+//   - for the owner, symmetrically under their non-extractable encKey;
+//   - for a shared reader, asymmetrically to their OpenPGP public key.
+// OpenPGP is used ONLY to wrap the ~32-byte DEK, never to encrypt file bytes.
+
+/** Fresh random 256-bit data key, as raw bytes (so it can be both used and wrapped). */
+export function generateDekBytes() {
+  return globalThis.crypto.getRandomValues(new Uint8Array(32))
+}
+
+/**
+ * Import raw DEK bytes as a non-extractable AES-GCM key for encrypting/decrypting
+ * a file's bytes, metadata, and tags. Non-extractable: once imported it can't be
+ * read back out — we keep the raw bytes separately only for wrapping.
+ */
+export function importDek(bytes) {
+  return subtle.importKey('raw', bytes, { name: 'AES-GCM' }, false, ['encrypt', 'decrypt'])
+}
+
+/** Owner envelope: DEK wrapped under encKey (AES-GCM). Returns { cipher, iv } base64. */
+export function wrapDekSymmetric(encKey, dekBytes) {
+  return encryptBytes(encKey, dekBytes)
+}
+
+/** Reverse of {@link wrapDekSymmetric}: returns the raw DEK bytes. */
+export function unwrapDekSymmetric(encKey, cipherB64, ivB64) {
+  return decryptBytes(encKey, cipherB64, ivB64)
+}
+
+// ---------- OpenPGP identity (for sharing) ----------
+
+/**
+ * Generate a user's OpenPGP keypair (Curve25519). Returned armored. The private
+ * key is NOT passphrase-protected here — we wrap it ourselves under encKey via
+ * {@link wrapPrivateKey} before it touches the server, which keeps it inside the
+ * same zero-knowledge envelope as everything else.
+ */
+export async function generateIdentity(username) {
+  const { publicKey, privateKey } = await openpgp.generateKey({
+    type: 'ecc',
+    curve: 'curve25519',
+    userIDs: [{ name: username }],
+    format: 'armored'
+  })
+  return { publicKey, privateKey }
+}
+
+/** AES-GCM-encrypt the armored private key under encKey. Returns { cipher, iv } base64. */
+export function wrapPrivateKey(encKey, privateKeyArmored) {
+  return encryptText(encKey, privateKeyArmored)
+}
+
+/** Decrypt the wrapped private key and parse it into a usable OpenPGP key object. */
+export async function unwrapPrivateKey(encKey, cipherB64, ivB64) {
+  const armored = await decryptText(encKey, cipherB64, ivB64)
+  return openpgp.readPrivateKey({ armoredKey: armored })
+}
+
+/** Parse an armored public key (e.g. a recipient's, fetched before sharing). */
+export function readPublicKey(armored) {
+  return openpgp.readKey({ armoredKey: armored })
+}
+
+/** Lowercase hex fingerprint of a public/private key — shown to the user for verification. */
+export function keyFingerprint(key) {
+  return key.getFingerprint()
+}
+
+/** Wrap a DEK to a recipient's OpenPGP public key. Returns an armored OpenPGP message. */
+export async function wrapDekForRecipient(dekBytes, recipientPublicKey) {
+  const message = await openpgp.createMessage({ binary: dekBytes })
+  return openpgp.encrypt({ message, encryptionKeys: recipientPublicKey, format: 'armored' })
+}
+
+/** Open an armored DEK envelope addressed to us with our private key. Returns raw DEK bytes. */
+export async function unwrapDekForSelf(armoredMessage, privateKey) {
+  const message = await openpgp.readMessage({ armoredMessage })
+  const { data } = await openpgp.decrypt({ message, decryptionKeys: privateKey, format: 'binary' })
+  return data instanceof Uint8Array ? data : new Uint8Array(data)
 }
