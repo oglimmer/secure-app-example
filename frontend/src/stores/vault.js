@@ -179,28 +179,46 @@ export const useVaultStore = defineStore('vault', () => {
     return Promise.all(views.map(decryptView))
   }
 
-  // Substring ("contains") search over the user's OWN files only — blind indexes
-  // are keyed with this user's indexKey, so shared-in files can't be searched.
-  // Each comma term must be contained in at least one of a file's tags (AND-ed).
-  // The server pre-filters on trigram blind indexes; because that match is
-  // necessary-but-not-sufficient, we verify the real substring here after
-  // decrypting, dropping any false positives.
+  async function listSharedFiles() {
+    const views = await api.get('/files/shared')
+    return Promise.all(views.map(decryptView))
+  }
+
+  // Does a file have a tag containing every query term? (terms are AND-ed, each
+  // term need only be a substring of one of the tags). Shared by both paths.
+  function matchesAllTerms(file, queries) {
+    const tags = file.tags.map((t) => normalizeTag(t))
+    return queries.every((q) => tags.some((t) => t.includes(q)))
+  }
+
+  // Substring ("contains") tag search across BOTH owned and shared-in files.
+  //
+  // Owned files use the scalable server-side trigram blind index: the server
+  // pre-filters on the (owner-keyed) indexes, and because that match is
+  // necessary-but-not-sufficient we confirm the real substring after decrypting.
+  //
+  // Shared-in files can't use that index (it's keyed with the *owner's* indexKey,
+  // which we don't have). But we already hold the DEK for every file shared with
+  // us, and that set is bounded — so we just fetch the shared set and filter it
+  // client-side. This leaks nothing to the server (the query never leaves the
+  // browser) and has no trigram false positives (it matches plaintext directly).
   async function searchByTags(terms) {
     const queries = terms.map((t) => normalizeTag(t)).filter(Boolean)
     if (queries.length === 0) return []
 
+    // --- owned: server-side blind index ---
     const gramSet = new Set()
     for (const q of queries) {
       for (const g of await ngramBlindIndexes(indexKey.value, q)) gramSet.add(g)
     }
-    if (gramSet.size === 0) return []
+    const ownedViews = gramSet.size === 0 ? [] : await api.post('/search', { grams: [...gramSet] })
+    const owned = (await Promise.all(ownedViews.map(decryptView)))
+      .filter((f) => matchesAllTerms(f, queries))
 
-    const views = await api.post('/search', { grams: [...gramSet] })
-    const decrypted = await Promise.all(views.map(decryptView))
-    return decrypted.filter((f) => {
-      const tags = f.tags.map((t) => normalizeTag(t))
-      return queries.every((q) => tags.some((t) => t.includes(q)))
-    })
+    // --- shared-in: client-side filter over the bounded shared set ---
+    const shared = (await listSharedFiles()).filter((f) => matchesAllTerms(f, queries))
+
+    return [...owned, ...shared]
   }
 
   async function downloadFile(id) {

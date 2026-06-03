@@ -12,6 +12,9 @@ public interface FileAccessRepository extends JpaRepository<FileAccess, Long> {
     /** Every file the user can see (owned + shared-in), newest file first. */
     List<FileAccess> findByRecipientIdOrderByFileCreatedAtDesc(Long recipientId);
 
+    /** Only the files shared <em>to</em> this user (role READER), newest file first. */
+    List<FileAccess> findByRecipientIdAndRoleOrderByFileCreatedAtDesc(Long recipientId, String role);
+
     /** This viewer's envelopes for a specific set of files (used by owner search). */
     List<FileAccess> findByRecipientIdAndFileIdIn(Long recipientId, Collection<Long> fileIds);
 

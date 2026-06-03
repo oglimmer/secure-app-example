@@ -84,11 +84,18 @@ All cryptography happens in the browser (`frontend/src/crypto.js`). This is a
    accepted residual risk in this prototype (same posture as `/auth/params`
    username enumeration).
 
-   **Shared files are not searchable** by the recipient: blind indexes are keyed
-   with the *owner's* `indexKey`, which the recipient never has and the owner
-   can't reproduce under the recipient's key. Shared files are listed, decrypted,
-   and downloaded — just not tag-searchable. (A searchable variant would carry a
-   per-file index key inside the envelope; deliberately out of scope here.)
+   **Tag search works across shared files too — client-side.** The owner-keyed
+   trigram blind index can't help a recipient (they don't have the owner's
+   `indexKey`, and handing it over would leak the searchability of the owner's
+   *whole* vault). But the recipient already holds the DEK for every file shared
+   with them, and that set is bounded, so the client simply fetches the shared
+   set (`GET /files/shared`) and filters it locally. This leaks **nothing** to the
+   server (the query never leaves the browser) and has no trigram false positives
+   (it matches decrypted tag text directly). Owned files keep using the scalable
+   server-side index; only the bounded shared set is filtered in the browser. (If
+   a user ever had so many shared-in files that fetching them all was prohibitive,
+   you'd instead need a per-file search key inside the envelope, with a per-file
+   server query — deliberately out of scope here.)
 
    **Revocation** removes server-side access (`DELETE …/shares/{user}`) but
    cannot retract a DEK a recipient has already unwrapped. Cryptographic
@@ -189,8 +196,9 @@ It exercises register → login (incl. wrong-password rejection, plus recovering
 the OpenPGP identity) → encrypted upload → trigram substring ("contains") search
 (case-insensitive, multi-term AND, with false-positive verification) → download
 round-trip → per-user isolation → **sharing** (alice shares with bob via an
-OpenPGP key envelope; bob decrypts + downloads but cannot search or delete it)
-→ revocation, all against the live API using the real browser crypto module.
+OpenPGP key envelope; bob decrypts, downloads, and tag-searches it client-side,
+but cannot delete it) → revocation, all against the live API using the real
+browser crypto module.
 
 ## Prototype limitations (not production-ready)
 
@@ -214,5 +222,7 @@ OpenPGP key envelope; bob decrypts + downloads but cannot search or delete it)
 - **Revocation isn't cryptographic** — revoking only deletes server-side access;
   a recipient who already unwrapped the DEK keeps it. Real un-sharing needs DEK
   rotation + re-wrap.
-- **Shared files aren't searchable** — by design (blind indexes are owner-keyed);
-  a per-file index key in the envelope would be needed to change this.
+- **Shared-file search is client-side** — the recipient fetches the whole shared
+  set and filters locally (fine here because that set is bounded and already
+  resident). Server-side shared search would need a per-file search key in the
+  envelope; deliberately out of scope.

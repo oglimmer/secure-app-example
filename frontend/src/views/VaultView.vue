@@ -91,7 +91,7 @@ async function doSearch() {
   busy.value = true
   try {
     files.value = await vault.searchByTags(tags)
-    listLabel.value = `Your files with a tag containing ${tags.map((t) => `“${t}”`).join(' AND ')}`
+    listLabel.value = `Files with a tag containing ${tags.map((t) => `“${t}”`).join(' AND ')}`
   } catch (e) {
     error.value = e.message || 'Search failed.'
   } finally {
@@ -213,10 +213,10 @@ onMounted(loadAll)
       <button class="ghost" @click="clearSearch">Show all</button>
     </div>
     <p class="muted" style="margin-top: 0.6rem;">
-      Substring match over <em>your own</em> files: each term (min 3 characters)
-      must be <em>contained</em> in one of a file’s tags, and files must match
-      <em>all</em> terms. Only trigram blind indexes are sent to the server.
-      Files shared with you are listed but not searchable.
+      Substring match: each term (min 3 characters) must be <em>contained</em> in
+      one of a file’s tags, and files must match <em>all</em> terms. Your own
+      files are searched server-side via trigram blind indexes; files shared with
+      you are searched locally in the browser (the query never leaves your device).
     </p>
   </div>
 

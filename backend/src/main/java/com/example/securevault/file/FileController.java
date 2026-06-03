@@ -43,6 +43,15 @@ public class FileController {
         return fileService.listAll(userId);
     }
 
+    /**
+     * The bounded set of files shared with this user, for client-side tag search.
+     * (Literal {@code /shared} is matched ahead of {@code /{id}} by the path matcher.)
+     */
+    @GetMapping("/shared")
+    public List<FileView> shared(@RequestAttribute(AuthInterceptor.USER_ID_ATTRIBUTE) Long userId) {
+        return fileService.listShared(userId);
+    }
+
     @GetMapping("/{id}")
     public FileContent download(@RequestAttribute(AuthInterceptor.USER_ID_ATTRIBUTE) Long userId,
                                 @PathVariable Long id) {

@@ -114,22 +114,33 @@ check('grams are blind indexes, not plaintext',
 // ============================== search (owner) ==============================
 // Sends the de-duplicated trigram blind indexes for every term, then verifies
 // the real substring after decrypting (terms are AND-ed across the file's tags).
+async function matchesAllTerms(viewer, v, queries) {
+  const dek = await resolveDek(viewer, v.envelope)
+  const tagTexts = await Promise.all(v.tags.map((t) => decryptText(dek, t.tagCipher, t.tagIv)))
+  const norm = tagTexts.map(normalizeTag)
+  return queries.every((q) => norm.some((t) => t.includes(q)))
+}
+
 async function search(viewer, list) {
   const queries = list.map((t) => normalizeTag(t)).filter(Boolean)
+  // owned: server-side trigram blind index, then client substring verification
   const gramSet = new Set()
   for (const q of queries) {
     for (const g of await ngramBlindIndexes(viewer.keys.indexKey, q)) gramSet.add(g)
   }
   const res = await call('POST', '/search', { grams: [...gramSet] })
   if (res.status !== 200) return res
-  const verified = []
+  const owned = []
   for (const v of res.body) {
-    const dek = await resolveDek(viewer, v.envelope)
-    const tagTexts = await Promise.all(v.tags.map((t) => decryptText(dek, t.tagCipher, t.tagIv)))
-    const norm = tagTexts.map(normalizeTag)
-    if (queries.every((q) => norm.some((t) => t.includes(q)))) verified.push(v)
+    if (await matchesAllTerms(viewer, v, queries)) owned.push(v)
   }
-  return { status: res.status, body: verified }
+  // shared-in: client-side filter over the bounded shared set
+  const sharedRes = await call('GET', '/files/shared')
+  const shared = []
+  for (const v of sharedRes.body) {
+    if (await matchesAllTerms(viewer, v, queries)) shared.push(v)
+  }
+  return { status: res.status, body: [...owned, ...shared] }
 }
 
 r = await search(alice, ['invoice'])  // lowercase query matches 'Invoice'
@@ -227,9 +238,16 @@ const bobDlDek = await resolveDek(bob, r.body.envelope)
 const bobBytes = await decryptBytes(bobDlDek, r.body.blobCipher, r.body.blobIv)
 check('bob downloads + decrypts shared bytes', new TextDecoder().decode(bobBytes) === secretText)
 
-// Shared files are NOT searchable for the recipient (owner-keyed blind indexes).
+// Shared files ARE searchable for the recipient — client-side, over the bounded
+// shared set (the owner-keyed server blind index can't help, so the client filters
+// the shared files it already holds the DEKs for).
 r = await search(bob, ['invoice'])
-check('bob cannot search shared file (0 results)', r.body.length === 0)
+check('bob can search shared file by tag (1 result)',
+  r.body.length === 1 && r.body[0].id === fileId)
+r = await search(bob, ['voi'])
+check('bob substring-matches a shared tag ("voi")', r.body.some((v) => v.id === fileId))
+r = await search(bob, ['absent-tag'])
+check('bob shared search for absent tag finds 0', r.body.length === 0)
 
 // Bob (a reader) cannot delete or re-share the file.
 r = await call('DELETE', `/files/${fileId}`)

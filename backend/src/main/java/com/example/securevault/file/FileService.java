@@ -74,6 +74,19 @@ public class FileService {
     }
 
     /**
+     * Only the files shared <em>to</em> this user. Used for tag search over shared
+     * files, which runs client-side: the recipient already holds the DEK for each
+     * shared file (so tags are decryptable) and the shared set is bounded by what
+     * was explicitly shared with them, so there's no need for — and no way to do —
+     * a server-side blind-index match here (those indexes are owner-keyed).
+     */
+    @Transactional(readOnly = true)
+    public List<FileView> listShared(Long viewerId) {
+        return toViews(access.findByRecipientIdAndRoleOrderByFileCreatedAtDesc(
+                viewerId, FileAccess.Role.READER.name()));
+    }
+
+    /**
      * Substring ("contains") search over the viewer's <em>own</em> files. The
      * blind indexes are keyed with the owner's indexKey, so only owned files can
      * be matched — shared-in files are intentionally not searchable (the owner's
